@@ -4,6 +4,8 @@ import rospy
 import select
 import sys
 
+import socket
+
 import mtdevice
 import mtnetworkdevice
 import mtdef
@@ -23,6 +25,29 @@ from math import radians, sqrt, atan2
 from tf.transformations import quaternion_from_matrix, quaternion_from_euler,\
     identity_matrix
 
+def make_NMEA_GPRMC_datetime_string(secs):
+    """Returns a GPRMC message with the time set by <secs> - The number of seconds in the day"""
+    hour = int(secs / 3600) % 24
+    minute = int(secs / 60) % 60
+    second = secs % 60
+    today = datetime.datetime.today()
+    gprmc = ("GPRMC,%02i%02i%02i,A,0000,00,N,00000,00,W,000.0,000.0,%02i%02i%02i,000.0,E"%(hour, minute, second, today.day, today.month, (today.year%100)))
+
+    #working inside out:
+    #   a.encode('hex_codec') converts a string to a hex value (string type)
+    #   int(..., 16) converts the hex string to an integer. Base 16 is selected.
+    #   map(lambda a: ..., gprmc) produces a list of integers of the string gprmc
+    #   
+    #   reduce(lambda x, y: x^y, ...) xor each value of the list cumulativle to the next value
+    checksum = reduce(lambda x, y: x^y,map(lambda a: int(a.encode('hex_codec'), 16), gprmc))
+
+    gprmc = "$%s*%02X\r\n"%(gprmc,checksum)
+    return gprmc
+
+def send_to_velodyne(ip, port, gprmc):
+    """Send timing message to the velodyne"""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.sendto(gprmc, (ip, port))
 
 def get_param(name, default):
     try:
@@ -54,6 +79,7 @@ def matrix_from_diagonal(diagonal):
 
 class XSensDriver(object):
 
+    
     def __init__(self):
 
         self.timeout = get_param('~timeout', 0.002)
@@ -66,7 +92,9 @@ class XSensDriver(object):
         self.port = get_param('~port', 48879)
 
         self.initial_wait = get_param('~initial_wait', 0.1)
-
+        self.device = None
+        
+        self.start_time = None
 
         #if device == 'auto':
         #    devs = mtdevice.find_devices(timeout=timeout,
@@ -90,10 +118,7 @@ class XSensDriver(object):
         #rospy.loginfo("MT node interface: %s at %d bd." % (device, baudrate))
         #self.mt = mtdevice.MTDevice(device, baudrate, timeout,
         #                            initial_wait=initial_wait)
-    	rospy.loginfo("MT node interface at %s:%d."%(self.ip, self.port))
 
-        self.device = None
-        
         ##TODO Do we want to block here if we cannot open the connection?
         while self.device == None:
             try:
@@ -103,6 +128,7 @@ class XSensDriver(object):
                 rospy.logwarn(str(mte) + ", trying again")
                 time.sleep(1)
                                 
+    	rospy.loginfo("MT node interface at %s:%d."%(self.ip, self.port))
 
                 
         # optional no rotation procedure for internal calibration of biases
@@ -153,11 +179,20 @@ class XSensDriver(object):
         # TODO pressure, ITOW from raw GPS?
         self.old_bGPS = 256  # publish GPS only if new
 
+        #holds the last second to prevent oversending the GPRMC message
+        self.last_nmea_sec = 0;
+
         # publish a string version of all data; to be parsed by clients
         self.str_pub = rospy.Publisher('imu_data_str', String, queue_size=10)
         self.last_delta_q_time = None
         self.delta_q_rate = None
         self.timeout_count = 0;
+
+    def __del__(self):
+        """Destructor"""
+        if self.device:
+            self.device.close()
+
 
     def reset_vars(self):
         self.imu_msg = Imu()
@@ -187,7 +222,7 @@ class XSensDriver(object):
         self.ecef_msg = PointStamped()
         self.pub_ecef = False
         self.pub_diag = False
-
+    
 
     def spin(self):
         try:
@@ -257,6 +292,8 @@ class XSensDriver(object):
                 elif dest == 'NWU':
                     return q
 
+
+
         def publish_time_ref(secs, nsecs, source):
             """Publish a time reference."""
             # Doesn't follow the standard publishing pattern since several time
@@ -264,6 +301,26 @@ class XSensDriver(object):
             if self.time_ref_pub is None:
                 self.time_ref_pub = rospy.Publisher(
                     'time_reference', TimeReference, queue_size=10)
+
+            if source == 'sample time fine':
+                if self.start_time == None:
+                    self.start_time = time.time() - (secs + (float(nsecs)/1e+9))
+                    #print("%f - (%d + (%d/1e+9))"%(time.time(), secs,nsecs))                
+                    #print(self.start_time)
+                else:
+                    now = time.time()
+                    imu = self.start_time + (secs + (float(nsecs)/1e+9))
+                    diff = now - imu
+                    #print("System Time: %f IMU Time:  %f Diff: %f"%(now, imu, diff))
+                    if self.last_nmea_sec != secs:
+                        gprmc = make_NMEA_GPRMC_datetime_string(int(self.start_time + secs))
+                        self.last_nmea_sec = secs                       
+                        if gprmc:
+                            send_to_velodyne('10.20.27.4', 10110, gprmc)
+                    
+                       
+
+
             time_ref_msg = TimeReference()
             time_ref_msg.header = self.h
             time_ref_msg.time_ref.secs = secs
@@ -842,12 +899,23 @@ class XSensDriver(object):
         self.str_pub.publish(str(data))
 
 
+driver = None
+
 def main():
     '''Create a ROS node and instantiate the class.'''
     rospy.init_node('xsens_driver')
+    global driver
+    #try:
     driver = XSensDriver()
     driver.spin()
+    #except:
+    #    exit_handler(0, 0)
 
+def exit_handler(signal, frame):
+    """Handle Ctrl-C"""
+    global driver
+    if driver:
+        del driver
 
 if __name__ == '__main__':
     main()

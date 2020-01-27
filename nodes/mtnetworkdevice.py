@@ -54,6 +54,10 @@ class MTNetworkDevice(object):
         if config_mode:
             self.GoToConfig()
 
+    def close(self):
+        if self.device:
+            self.device.close()
+
     ############################################################
     # Low-level communication
     ############################################################
@@ -72,7 +76,7 @@ class MTNetworkDevice(object):
             pass
         try:
             self.device.send(msg)
-        except serial.serialutil.SerialTimeoutException:
+        except socket.timeout:
             raise MTTimeoutException("writing message")
         if self.verbose:
             print "MT: Write message id 0x%02X (%s) with %d data bytes: "\
