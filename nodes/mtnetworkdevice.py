@@ -18,7 +18,7 @@ from mtdef import MID, OutputMode, OutputSettings, MTException, Baudrates, \
 # MTNetworkDevice class
 ################################################################
 class MTNetworkDevice(object):
-    """XSens MT device communication object."""
+    """XSens MT Network device communication object."""
 
     def __init__(self, ip, port, timeout=0.002, autoconf=False,
                  config_mode=False, verbose=False, initial_wait=0.0):
@@ -27,7 +27,11 @@ class MTNetworkDevice(object):
 
         # serial interface to the device
         self.device = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.device.connect((ip, port))
+        try:
+            self.device.connect((ip, port))
+        except socket.error:
+            raise MTException('Unable to connect to %s:%d'%(ip,port))
+        self.device.settimeout(timeout)
 
         time.sleep(initial_wait)  # open returns before device is ready
 
@@ -79,7 +83,10 @@ class MTNetworkDevice(object):
         """Get a given amount of data."""
         buf = bytearray()
         for _ in range(100):
-            buf.extend(self.device.recv(size-len(buf)))
+            try:
+                buf.extend(self.device.recv(size-len(buf)))
+            except socket.timeout:
+                pass                
             if len(buf) == size:
                 return buf
             if self.verbose:
@@ -127,6 +134,7 @@ class MTNetworkDevice(object):
     def read_msg(self):
         """Low-level message receiving function."""
         start = time.time()
+
         while (time.time()-start) < self.timeout:
             # first part of preamble
             if ord(self.waitfor()) != 0xFA:
@@ -223,7 +231,9 @@ class MTNetworkDevice(object):
         """Get the device identifier."""
         self._ensure_config_state()
         data = self.write_ack(MID.ReqDID)
-        deviceID, = struct.unpack('!I', data)
+        #TODO data comes back as a 8 byte.  No documentation mentions this.
+        # They all assume a 4 byte message
+        deviceID, = struct.unpack('!Q', data)
         return deviceID
 
     def GetProductCode(self):
@@ -405,7 +415,10 @@ class MTNetworkDevice(object):
         """Get the NMEA data output configuration."""
         self._ensure_config_state()
         data = self.write_ack(MID.SetStringOutputType)
-        string_output_type, = struct.unpack('!H', data)
+        if len(data) == 6:
+            string_output_type, string_output_freq = struct.unpack('!IH', data)
+        elif len(data) == 4:
+            string_output_type, = struct.unpack('!H', data)
         return string_output_type
 
     def SetStringOutputType(self, string_output_type):
@@ -567,8 +580,13 @@ class MTNetworkDevice(object):
         """Get the ID of the currently used XKF scenario."""
         self._ensure_config_state()
         data = self.write_ack(MID.SetCurrentScenario)
-        _, self.scenario_id = struct.unpack('!BB', data)  # version, id
-        return self.scenario_id
+        try:
+            _, self.scenario_id = struct.unpack('!BB', data)  # version, id
+            return self.scenario_id
+        except struct.error:
+            if self.verbose:
+                print(data)
+            raise MTException('expected 2 bytes, received %d bytes'%len(data))
 
     def SetCurrentScenario(self, scenario_id):
         """Set the XKF scenario to use."""
@@ -1488,7 +1506,7 @@ def main():
     # parse command line
     shopts = 'hra:c:eild:b:m:s:p:f:x:vy:u:g:o:j:t:w:'
     lopts = ['help', 'reset', 'change-baudrate=', 'configure=', 'echo',
-             'inspect', 'legacy-configure', 'device=', 'baudrate=',
+             'inspect', 'legacy-configure', 'ip-address=', 'port=',
              'output-mode=', 'output-settings=', 'period=',
              'deprecated-skip-factor=', 'xkf-scenario=', 'verbose',
              'synchronization=', 'utc-time=', 'gnss-platform=',
@@ -1500,8 +1518,8 @@ def main():
         usage()
         return 1
     # default values
-    device = '/dev/ttyUSB0'
-    baudrate = 115200
+    ip = '10.20.27.2'
+    port = 48879
     timeout = 0.002
     initial_wait = 0.1
     mode = None
@@ -1557,11 +1575,11 @@ def main():
             if UTCtime_settings is None:
                 return 1
             actions.append('setUTCtime')
-        elif o in ('-d', '--device'):
-            device = a
-        elif o in ('-b', '--baudrate'):
+        elif o in ('-d', '--ip-address'):
+            ip = a
+        elif o in ('-b', '--port'):
             try:
-                baudrate = int(a)
+                port = int(a)
             except ValueError:
                 print "baudrate argument must be integer."
                 return 1
@@ -1619,26 +1637,14 @@ def main():
     if len(actions) == 0:
         actions.append('echo')
     try:
-        if device == 'auto':
-            devs = find_devices(timeout=timeout, verbose=verbose,
-                                initial_wait=initial_wait)
-            if devs:
-                print "Detected devices:", "".join('\n\t%s @ %d' % (d, p)
-                                                   for d, p in devs)
-                print "Using %s @ %d" % devs[0]
-                device, baudrate = devs[0]
-            else:
-                print "No suitable device found."
-                return 1
-
         # open device
         try:
-            mt = MTNetworkDevice(ip, port)
+            mt = MTNetworkDevice(ip, port, verbose=verbose, timeout=timeout)
         except OSError:
             raise MTException("unable to open %s:%d"%(ip, port))
         # execute actions
         if 'inspect' in actions:
-            inspect(mt, device, baudrate)
+            inspect(mt, ip, port)
         if 'change-baudrate' in actions:
             print "(Disabled) Changing baudrate from %d to %d:" % (baudrate,
                                                         new_baudrate),
@@ -1772,8 +1778,8 @@ def inspect(mt, ip, port):
                 print 'message unsupported by your device.'
             else:
                 raise e
-    print "Device: %s at %d Bd:" % (device, baudrate)
-    try_message("device ID:", mt.GetDeviceID, hex_fmt(4))
+    print "Device: %s:%d :"%(ip, port)
+    try_message("device ID:", mt.GetDeviceID, hex_fmt(8))
     try_message("product code:", mt.GetProductCode)
     try_message("hardware version:", mt.GetHardwareVersion)
     try_message("firmware revision:", mt.GetFirmwareRev)

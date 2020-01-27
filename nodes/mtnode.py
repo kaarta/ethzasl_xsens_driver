@@ -56,15 +56,16 @@ class XSensDriver(object):
 
     def __init__(self):
 
-        timeout = get_param('~timeout', 0.002)
+        self.timeout = get_param('~timeout', 0.002)
+        self.verbose = get_param('~verbose', False)
 
-        device = get_param('~device', 'auto')
-        baudrate = get_param('~baudrate', 0)
+        self.device = get_param('~device', 'auto')
+        self.baudrate = get_param('~baudrate', 0)
 
-        ip = get_param('~ip', '10.20.27.2')
-        port = get_param('~port', 48879)
+        self.ip = get_param('~ip', '10.20.27.2')
+        self.port = get_param('~port', 48879)
 
-        initial_wait = get_param('~initial_wait', 0.1)
+        self.initial_wait = get_param('~initial_wait', 0.1)
 
 
         #if device == 'auto':
@@ -89,9 +90,21 @@ class XSensDriver(object):
         #rospy.loginfo("MT node interface: %s at %d bd." % (device, baudrate))
         #self.mt = mtdevice.MTDevice(device, baudrate, timeout,
         #                            initial_wait=initial_wait)
-    	rospy.loginfo("MT node interface at %s:%d."%(ip, port))
-        self.device = mtnetworkdevice.MTNetworkDevice(ip, port, verbose=False)
+    	rospy.loginfo("MT node interface at %s:%d."%(self.ip, self.port))
 
+        self.device = None
+        
+        ##TODO Do we want to block here if we cannot open the connection?
+        while self.device == None:
+            try:
+                self.device = mtnetworkdevice.MTNetworkDevice(self.ip, self.port, 
+                                                        verbose=self.verbose, timeout=self.timeout)
+            except mtdef.MTException as mte:
+                rospy.logwarn(str(mte) + ", trying again")
+                time.sleep(1)
+                                
+
+                
         # optional no rotation procedure for internal calibration of biases
         # (only mark iv devices)
         no_rotation_duration = get_param('~no_rotation_duration', 0)
@@ -144,6 +157,7 @@ class XSensDriver(object):
         self.str_pub = rospy.Publisher('imu_data_str', String, queue_size=10)
         self.last_delta_q_time = None
         self.delta_q_rate = None
+        self.timeout_count = 0;
 
     def reset_vars(self):
         self.imu_msg = Imu()
@@ -174,8 +188,10 @@ class XSensDriver(object):
         self.pub_ecef = False
         self.pub_diag = False
 
+
     def spin(self):
         try:
+        
             while not rospy.is_shutdown():
                 self.spin_once()
                 self.reset_vars()
@@ -718,10 +734,32 @@ class XSensDriver(object):
             return "fill_from_%s" % (name.replace(" ", "_"))
 
         # get data
+
+        
         try:
             data = self.device.read_measurement()
+            #reset the timeout count if we get a measurement
+            self.timeout_count = 0;
         except mtdef.MTTimeoutException:
-            time.sleep(0.1)
+            rospy.logwarn("Exception: timeout_count: %d"%self.timeout_count)
+            if self.timeout_count == 10:            
+                rospy.logwarn("Connection is closed. Attempting to reconnect")
+                self.device = None
+                self.timeout_count = 0;
+                ##TODO Do we want to block here if we cannot open the connection?
+                while self.device == None:
+                    try:
+                        self.device = mtnetworkdevice.MTNetworkDevice(self.ip, self.port, 
+                                                                verbose=self.verbose,
+                                                                timeout=self.timeout)
+                    except mtdef.MTException as mte:
+                        rospy.logwarn(str(mte) + ", trying again.")
+                    time.sleep(1)
+            else:    
+                self.timeout_count = self.timeout_count + 1
+                rospy.logwarn("read_measurement timed out.")
+                time.sleep(0.1)
+
             return
         # common header
         self.h = Header()
