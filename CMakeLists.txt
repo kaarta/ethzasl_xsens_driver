@@ -128,6 +128,7 @@ include_directories(
 install(PROGRAMS
   nodes/mtnode.py
   nodes/mtdef.py
+  nodes/mtnetworkdevice.py
   nodes/mtdevice.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

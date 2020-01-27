@@ -5,6 +5,7 @@ import select
 import sys
 
 import mtdevice
+import mtnetworkdevice
 import mtdef
 
 from std_msgs.msg import Header, String, UInt16
@@ -50,35 +51,46 @@ def matrix_from_diagonal(diagonal):
     return tuple(matrix)
 
 
+
 class XSensDriver(object):
 
     def __init__(self):
+
+        timeout = get_param('~timeout', 0.002)
+
         device = get_param('~device', 'auto')
         baudrate = get_param('~baudrate', 0)
-        timeout = get_param('~timeout', 0.002)
-        initial_wait = get_param('~initial_wait', 0.1)
-        if device == 'auto':
-            devs = mtdevice.find_devices(timeout=timeout,
-                                         initial_wait=initial_wait)
-            if devs:
-                device, baudrate = devs[0]
-                rospy.loginfo("Detected MT device on port %s @ %d bps"
-                              % (device, baudrate))
-            else:
-                rospy.logerr("Fatal: could not find proper MT device.")
-                rospy.signal_shutdown("Could not find proper MT device.")
-                return
-        if not baudrate:
-            baudrate = mtdevice.find_baudrate(device, timeout=timeout,
-                                              initial_wait=initial_wait)
-        if not baudrate:
-            rospy.logerr("Fatal: could not find proper baudrate.")
-            rospy.signal_shutdown("Could not find proper baudrate.")
-            return
 
-        rospy.loginfo("MT node interface: %s at %d bd." % (device, baudrate))
-        self.mt = mtdevice.MTDevice(device, baudrate, timeout,
-                                    initial_wait=initial_wait)
+        ip = get_param('~ip', '10.20.27.2')
+        port = get_param('~port', 48879)
+
+        initial_wait = get_param('~initial_wait', 0.1)
+
+
+        #if device == 'auto':
+        #    devs = mtdevice.find_devices(timeout=timeout,
+        #                                 initial_wait=initial_wait)
+        #    if devs:
+        #        device, baudrate = devs[0]
+        #        rospy.loginfo("Detected MT device on port %s @ %d bps"
+        #                      % (device, baudrate))
+        #    else:
+        #        rospy.logerr("Fatal: could not find proper MT device.")
+        #        rospy.signal_shutdown("Could not find proper MT device.")
+        #        return
+        #if not baudrate:
+        #    baudrate = mtdevice.find_baudrate(device, timeout=timeout,
+        #                                      initial_wait=initial_wait)
+        #if not baudrate:
+        #    rospy.logerr("Fatal: could not find proper baudrate.")
+        #    rospy.signal_shutdown("Could not find proper baudrate.")
+        #    return
+
+        #rospy.loginfo("MT node interface: %s at %d bd." % (device, baudrate))
+        #self.mt = mtdevice.MTDevice(device, baudrate, timeout,
+        #                            initial_wait=initial_wait)
+    	rospy.loginfo("MT node interface at %s:%d."%(ip, port))
+        self.device = mtnetworkdevice.MTNetworkDevice(ip, port, verbose=False)
 
         # optional no rotation procedure for internal calibration of biases
         # (only mark iv devices)
@@ -169,7 +181,7 @@ class XSensDriver(object):
                 self.reset_vars()
         # Ctrl-C signal interferes with select with the ROS signal handler
         # should be OSError in python 3.?
-        except (select.error, OSError, serial.serialutil.SerialException):
+        except (select.error, OSError):
             pass
 
     def spin_once(self):
@@ -707,7 +719,7 @@ class XSensDriver(object):
 
         # get data
         try:
-            data = self.mt.read_measurement()
+            data = self.device.read_measurement()
         except mtdef.MTTimeoutException:
             time.sleep(0.1)
             return
