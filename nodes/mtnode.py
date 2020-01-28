@@ -513,6 +513,8 @@ class XSensDriver(object):
         def fill_from_Timestamp(o):
             '''Fill messages with information from 'Timestamp' MTData2 block.
             '''
+            ##TODO fill the self.h.stamp on all of the time types
+              
             try:
                 # put timestamp from gps UTC time if available
                 y, m, d, hr, mi, s, ns, f = o['Year'], o['Month'], o['Day'],\
@@ -544,6 +546,8 @@ class XSensDriver(object):
                 self.imu_time = self.start_time + float_secs
                 #diff = now - self.imu_time
                 #print("System Time: %f IMU Time:  %f Diff: %f"%(now, self.imu_time, diff))
+
+                self.h.stamp = rospy.Time(self.imu_time) 
 
                 publish_time_ref(secs, nsecs, 'sample time fine')
             except KeyError:
@@ -839,6 +843,12 @@ class XSensDriver(object):
         # set default values
         self.reset_vars()
 
+        # common header
+        self.h = Header()
+        self.h.frame_id = self.frame_id
+        #Header.stamp is filled in fill_from_Timestamp on Time Sample Fine
+        
+ 
         # fill messages based on available data fields
         for n, o in data.items():
             try:
@@ -846,14 +856,6 @@ class XSensDriver(object):
             except KeyError:
                 rospy.logwarn("Unknown MTi data packet: '%s', ignoring." % n)
 
-        # common header
-        self.h = Header()
-        self.h.frame_id = self.frame_id
-        #if the timing data wasn't filled from the messages then use ROS Time
-        if self.imu_time == 0:        
-            self.h.stamp = rospy.Time.now()
-        else:
-            self.h.stamp = rospy.Time(self.imu_time) 
 
         #Send the NMEA string to the Velodyne when the SyncOut event occurs    
         if self.sync_out:
