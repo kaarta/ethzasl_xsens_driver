@@ -5,6 +5,8 @@ import select
 import sys
 
 import socket
+import numpy
+import math
 
 import mtdevice
 import mtnetworkdevice
@@ -23,7 +25,7 @@ import serial
 # transform Euler angles or matrix into quaternions
 from math import radians, sqrt, atan2
 from tf.transformations import quaternion_from_matrix, quaternion_from_euler,\
-    identity_matrix
+    identity_matrix, rotation_matrix
 
 def make_NMEA_GPRMC_datetime_string(secs):
     """Returns a GPRMC message with the time set by <secs> - The number of seconds in the day"""
@@ -64,7 +66,7 @@ def send_to_velodyne(s, ip, port, gprmc):
 def get_param(name, default):
     try:
         v = rospy.get_param(name)
-        rospy.loginfo("Found parameter: %s, value: %s" % (name, str(v)))
+        rospy.loginfo("Found parameter: %s, value: %s, type: %s" % (name, str(v), type(v)))
     except KeyError:
         v = default
         rospy.logwarn("Cannot find value for parameter: %s, assigning "
@@ -90,48 +92,78 @@ def matrix_from_diagonal(diagonal):
 
 
 class XSensDriver(object):
-
-    
+ 
     def __init__(self):
 
-        self.timeout = get_param('~timeout', 0.002)
-        self.verbose = get_param('~verbose', False)
+        self.imu_port = get_param('/receive_xsens/imu_port', '/dev/ttyUSB0')
+        self.imu_baudrate = get_param('/receive_xsens/imu_baudrate', 230400)
 
-        self.device = get_param('~device', 'auto')
-        self.baudrate = get_param('~baudrate', 0)
+        self.timeout = get_param('/receive_xsens/timeout', 0.002)
+        self.verbose = get_param('/receive_xsens/verbose', False)
+        self.initial_wait = get_param('/receive_xsens/initial_wait', 0.1)
 
-        self.ip = get_param('~ip', '10.20.27.2')
-        self.port = get_param('~port', 48879)
+        self.ip = get_param('/receive_xsens/xsens_ip', '10.20.27.2')
+        self.port = get_param('/receive_xsens/xsens_socket', 48879)
 
-        self.initial_wait = get_param('~initial_wait', 0.1)
-        self.device = None
-        
-        self.start_time = None
+        #Used to send IMU time to Velodyne
+        self.sync_velodyne = get_param('/receive_xsens/sync_velodyne', True)
         self.velodyne_socket = None
+        self.velodyne_ip = get_param('/receive_xsens/velodyne_ip', '10.20.27.4')
+        self.velodyne_port = get_param('/receive_xsens/velodyne_port', 10110)
+        
+        self.frame_id = get_param('/receive_xsens/frame_id', '/imu')
+        self.frame_local = get_param('/receive_xsens/frame_local', 'ENU')
+
+        self.alignment = quaternion_from_euler(
+                                get_param('/receive_xsens/laser_wrt_imu_yaw',  0.0),
+                                get_param('/receive_xsens/laser_wrt_imu_roll', 0.0),
+                                get_param('/receive_xsens/laser_wrt_imu_pitch',   0.0))
+        
+        print(self.alignment)
+        
+
+        ##TODO Handle these fields
+        #use_chrony: false
+        #chrony_sock: /var/run/chrony.sock
+        #chrony_latency: 0.01
+
+        ##TODO change to velodyne_sync_type ('none', 'ethernet', 'serial')     
+        #use_ethernet: true
+         
+        #nmea_baudrate: 9600
+        #nmea_port: /dev/ttyUSB1
+
+        #pub_mag_field: false
+        # pub_free_acceleration: false
+
 
         #if device == 'auto':
         #    devs = mtdevice.find_devices(timeout=timeout,
         #                                 initial_wait=initial_wait)
         #    if devs:
-        #        device, baudrate = devs[0]
+        #        device, imu_baudrate = devs[0]
         #        rospy.loginfo("Detected MT device on port %s @ %d bps"
-        #                      % (device, baudrate))
+        #                      % (device, imu_baudrate))
         #    else:
         #        rospy.logerr("Fatal: could not find proper MT device.")
         #        rospy.signal_shutdown("Could not find proper MT device.")
         #        return
-        #if not baudrate:
-        #    baudrate = mtdevice.find_baudrate(device, timeout=timeout,
+        #if not imu_baudrate:
+        #    imu_baudrate = mtdevice.find_baudrate(device, timeout=timeout,
         #                                      initial_wait=initial_wait)
-        #if not baudrate:
+        #if not imu_baudrate:
         #    rospy.logerr("Fatal: could not find proper baudrate.")
         #    rospy.signal_shutdown("Could not find proper baudrate.")
         #    return
 
-        #rospy.loginfo("MT node interface: %s at %d bd." % (device, baudrate))
-        #self.mt = mtdevice.MTDevice(device, baudrate, timeout,
+        #rospy.loginfo("MT node interface: %s at %d bd." % (device, imu_baudrate))
+        #self.mt = mtdevice.MTDevice(device, imu_baudrate, timeout,
         #                            initial_wait=initial_wait)
 
+
+        
+
+        self.device = None
         ##TODO Do we want to block here if we cannot open the connection?
         while self.device == None:
             try:
@@ -143,28 +175,36 @@ class XSensDriver(object):
                                 
     	rospy.loginfo("MT node interface at %s:%d."%(self.ip, self.port))
 
-                
+        #Check set the Alignment on the device.  These setting persist so write at each boot.
+        self.device.GoToConfig()
+        self.device.SetAlignmentRotation(0, self.alignment)
+        #makes sure the local (1) alignment is set to the identity
+        self.device.SetAlignmentRotation(1, numpy.array([ 0.,  0.,  0.,  1.]))
+        print(self.device.GetAlignmentRotation(0))
+        print(self.device.GetAlignmentRotation(1))
+        self.device.GoToMeasurement()
+
+
         # optional no rotation procedure for internal calibration of biases
         # (only mark iv devices)
-        no_rotation_duration = get_param('~no_rotation_duration', 0)
+        no_rotation_duration = get_param('/receive_xsens/no_rotation_duration', 0)
         if no_rotation_duration:
             rospy.loginfo("Starting the no-rotation procedure to estimate the "
                           "gyroscope biases for %d s. Please don't move the "
                           "IMU during this time." % no_rotation_duration)
             self.mt.SetNoRotation(no_rotation_duration)
 
-        self.frame_id = get_param('~frame_id', '/base_imu')
-
-        self.frame_local = get_param('~frame_local', 'ENU')
+        
+        
 
         self.angular_velocity_covariance = matrix_from_diagonal(
-            get_param_list('~angular_velocity_covariance_diagonal', [radians(0.025)] * 3)
+            get_param_list('/receive_xsens/angular_velocity_covariance_diagonal', [radians(0.025)] * 3)
         )
         self.linear_acceleration_covariance = matrix_from_diagonal(
-            get_param_list('~linear_acceleration_covariance_diagonal', [0.0004] * 3)
+            get_param_list('/receive_xsens/linear_acceleration_covariance_diagonal', [0.0004] * 3)
         )
         self.orientation_covariance = matrix_from_diagonal(
-            get_param_list("~orientation_covariance_diagonal", [radians(1.), radians(1.), radians(9.)])
+            get_param_list("/receive_xsens/orientation_covariance_diagonal", [radians(1.), radians(1.), radians(9.)])
         )
 
         self.diag_msg = DiagnosticArray()
@@ -192,11 +232,17 @@ class XSensDriver(object):
         # TODO pressure, ITOW from raw GPS?
         self.old_bGPS = 256  # publish GPS only if new
 
+
+
         #Marks when the message comes during a SyncOut Event, ie PPS Pulse
         self.sync_out = False
         
         #Holds the imu time of the message converted to real time 
         self.imu_time = 0.0
+
+
+        
+        self.start_time = None
 
         #tracks how many times in a row we timed-out on the recv, if we 
         # hit 10 then try to reconnect
@@ -859,8 +905,8 @@ class XSensDriver(object):
 
         #Send the NMEA string to the Velodyne when the SyncOut event occurs    
         if self.sync_out:
-            gprmc = make_NMEA_GPRMC_datetime_string(int(self.imu_time))
-            if gprmc:
+            gprmc = make_NMEA_GPRMC_datetime_string(int(self.imu_time +0.5))
+            if gprmc and self.sync_velodyne:
                 rospy.logdebug(gprmc)
                 send_to_velodyne(self.velodyne_socket, '10.20.27.4', 10110, gprmc)
                 
