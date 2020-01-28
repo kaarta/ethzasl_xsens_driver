@@ -839,7 +839,6 @@ class XSensDriver(object):
         # set default values
         self.reset_vars()
 
-        
         # fill messages based on available data fields
         for n, o in data.items():
             try:
@@ -847,7 +846,6 @@ class XSensDriver(object):
             except KeyError:
                 rospy.logwarn("Unknown MTi data packet: '%s', ignoring." % n)
 
-        
         # common header
         self.h = Header()
         self.h.frame_id = self.frame_id
@@ -864,10 +862,6 @@ class XSensDriver(object):
                 rospy.logdebug(gprmc)
                 send_to_velodyne(self.velodyne_socket, '10.20.27.4', 10110, gprmc)
                 
-
-  
-        
-
         # publish available information
         if self.pub_imu:
             self.imu_msg.header = self.h
