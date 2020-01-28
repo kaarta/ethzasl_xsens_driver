@@ -76,7 +76,7 @@ class MTNetworkDevice(object):
             pass
         try:
             self.device.send(msg)
-        except socket.timeout:
+        except (socket.error, socket.timeout):
             raise MTTimeoutException("writing message")
         if self.verbose:
             print "MT: Write message id 0x%02X (%s) with %d data bytes: "\

@@ -179,14 +179,22 @@ class XSensDriver(object):
         # TODO pressure, ITOW from raw GPS?
         self.old_bGPS = 256  # publish GPS only if new
 
-        #holds the last second to prevent oversending the GPRMC message
-        self.last_nmea_sec = 0;
+        #holds the last time a nema mesage was sent to the velodyne
+        # to prevent oversending the GPRMC message
+        self.last_nmea_time = 0;
+        #max rate to send the nema message
+        self.nmea_rate_hz = 10;
+
+
+        #tracks how many times in a row we timed-out on the recv, if we 
+        # hit 10 then try to reconnect
+        self.timeout_count = 0;
 
         # publish a string version of all data; to be parsed by clients
         self.str_pub = rospy.Publisher('imu_data_str', String, queue_size=10)
         self.last_delta_q_time = None
         self.delta_q_rate = None
-        self.timeout_count = 0;
+        
 
     def __del__(self):
         """Destructor"""
@@ -308,13 +316,14 @@ class XSensDriver(object):
                     #print("%f - (%d + (%d/1e+9))"%(time.time(), secs,nsecs))                
                     #print(self.start_time)
                 else:
-                    now = time.time()
+                    #now = time.time()
+                    
                     imu = self.start_time + (secs + (float(nsecs)/1e+9))
-                    diff = now - imu
+                    #diff = now - imu
                     #print("System Time: %f IMU Time:  %f Diff: %f"%(now, imu, diff))
-                    if self.last_nmea_sec != secs:
-                        gprmc = make_NMEA_GPRMC_datetime_string(int(self.start_time + secs))
-                        self.last_nmea_sec = secs                       
+                    if (imu - self.last_nmea_time) > (1/self.nmea_rate_hz)  :
+                        gprmc = make_NMEA_GPRMC_datetime_string(int(imu))
+                        self.last_nmea_time = imu                       
                         if gprmc:
                             send_to_velodyne('10.20.27.4', 10110, gprmc)
                     
