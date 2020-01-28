@@ -31,7 +31,7 @@ def make_NMEA_GPRMC_datetime_string(secs):
     minute = int(secs / 60) % 60
     second = secs % 60
     today = datetime.datetime.today()
-    gprmc = ("GPRMC,%02i%02i%02i,A,0000,00,N,00000,00,W,000.0,000.0,%02i%02i%02i,000.0,E"%(hour, minute, second, today.day, today.month, (today.year%100)))
+    gprmc = ("GPRMC,%02i%02i%02i,A,0000.00,N,00000.00,W,000.0,000.0,%02i%02i%02i,000.0,E"%(hour, minute, second, today.day, today.month, (today.year%100)))
 
     #working inside out:
     #   a.encode('hex_codec') converts a string to a hex value (string type)
@@ -41,13 +41,25 @@ def make_NMEA_GPRMC_datetime_string(secs):
     #   reduce(lambda x, y: x^y, ...) xor each value of the list cumulativle to the next value
     checksum = reduce(lambda x, y: x^y,map(lambda a: int(a.encode('hex_codec'), 16), gprmc))
 
+    #Add in the leading $, and prepend the checksum and newlines
     gprmc = "$%s*%02X\r\n"%(gprmc,checksum)
     return gprmc
 
-def send_to_velodyne(ip, port, gprmc):
-    """Send timing message to the velodyne"""
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.sendto(gprmc, (ip, port))
+
+def send_to_velodyne(s, ip, port, gprmc):
+    """Send timing message to the velodyne
+       s -<socket.socket, SOCK_DGRAM type> the socket object, created if s == None
+       ip -<str> the ip address to send to
+       port -<int> the port to send to 
+       gprmc - <str> the fully formed gprmc message.
+    """
+    try:
+        if not s:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+        n = s.sendto(gprmc, (ip, port))
+    except:
+        print("Failed to send.")
 
 def get_param(name, default):
     try:
@@ -95,6 +107,7 @@ class XSensDriver(object):
         self.device = None
         
         self.start_time = None
+        self.velodyne_socket = None
 
         #if device == 'auto':
         #    devs = mtdevice.find_devices(timeout=timeout,
@@ -179,12 +192,11 @@ class XSensDriver(object):
         # TODO pressure, ITOW from raw GPS?
         self.old_bGPS = 256  # publish GPS only if new
 
-        #holds the last time a nema mesage was sent to the velodyne
-        # to prevent oversending the GPRMC message
-        self.last_nmea_time = 0;
-        #max rate to send the nema message
-        self.nmea_rate_hz = 10;
-
+        #Marks when the message comes during a SyncOut Event, ie PPS Pulse
+        self.sync_out = False
+        
+        #Holds the imu time of the message converted to real time 
+        self.imu_time = 0.0
 
         #tracks how many times in a row we timed-out on the recv, if we 
         # hit 10 then try to reconnect
@@ -230,8 +242,8 @@ class XSensDriver(object):
         self.ecef_msg = PointStamped()
         self.pub_ecef = False
         self.pub_diag = False
-    
-
+        self.sync_out = False
+       
     def spin(self):
         try:
         
@@ -309,27 +321,6 @@ class XSensDriver(object):
             if self.time_ref_pub is None:
                 self.time_ref_pub = rospy.Publisher(
                     'time_reference', TimeReference, queue_size=10)
-
-            if source == 'sample time fine':
-                if self.start_time == None:
-                    self.start_time = time.time() - (secs + (float(nsecs)/1e+9))
-                    #print("%f - (%d + (%d/1e+9))"%(time.time(), secs,nsecs))                
-                    #print(self.start_time)
-                else:
-                    #now = time.time()
-                    
-                    imu = self.start_time + (secs + (float(nsecs)/1e+9))
-                    #diff = now - imu
-                    #print("System Time: %f IMU Time:  %f Diff: %f"%(now, imu, diff))
-                    if (imu - self.last_nmea_time) > (1/self.nmea_rate_hz)  :
-                        gprmc = make_NMEA_GPRMC_datetime_string(int(imu))
-                        self.last_nmea_time = imu                       
-                        if gprmc:
-                            send_to_velodyne('10.20.27.4', 10110, gprmc)
-                    
-                       
-
-
             time_ref_msg = TimeReference()
             time_ref_msg.header = self.h
             time_ref_msg.time_ref.secs = secs
@@ -487,6 +478,10 @@ class XSensDriver(object):
             else:
                 self.xkf_stat.level = DiagnosticStatus.WARN
                 self.xkf_stat.message = "Invalid"
+            if status & 0x00400000:
+                self.sync_out = True
+            else:
+                self.sync_out = False
             if status & 0b0100:
                 self.gps_stat.level = DiagnosticStatus.OK
                 self.gps_stat.message = "Ok"
@@ -534,10 +529,22 @@ class XSensDriver(object):
             except KeyError:
                 pass
             try:
+                now = time.time()
                 sample_time_fine = o['SampleTimeFine']
+                float_secs = sample_time_fine / 10000.0
                 # int in 10kHz ticks
-                secs = int(sample_time_fine / 10000)
+                secs = int(float_secs)
                 nsecs = 1e5 * (sample_time_fine % 10000)
+
+                #calculate the start time of the imu
+                if self.start_time == None:
+                    self.start_time = now - float_secs
+
+                #recalulate the time using the time from the message
+                self.imu_time = self.start_time + float_secs
+                #diff = now - self.imu_time
+                #print("System Time: %f IMU Time:  %f Diff: %f"%(now, self.imu_time, diff))
+
                 publish_time_ref(secs, nsecs, 'sample time fine')
             except KeyError:
                 pass
@@ -827,20 +834,39 @@ class XSensDriver(object):
                 time.sleep(0.1)
 
             return
-        # common header
-        self.h = Header()
-        self.h.stamp = rospy.Time.now()
-        self.h.frame_id = self.frame_id
+
 
         # set default values
         self.reset_vars()
 
+        
         # fill messages based on available data fields
         for n, o in data.items():
             try:
                 locals()[find_handler_name(n)](o)
             except KeyError:
                 rospy.logwarn("Unknown MTi data packet: '%s', ignoring." % n)
+
+        
+        # common header
+        self.h = Header()
+        self.h.frame_id = self.frame_id
+        #if the timing data wasn't filled from the messages then use ROS Time
+        if self.imu_time == 0:        
+            self.h.stamp = rospy.Time.now()
+        else:
+            self.h.stamp = rospy.Time(self.imu_time) 
+
+        #Send the NMEA string to the Velodyne when the SyncOut event occurs    
+        if self.sync_out:
+            gprmc = make_NMEA_GPRMC_datetime_string(int(self.imu_time))
+            if gprmc:
+                rospy.logdebug(gprmc)
+                send_to_velodyne(self.velodyne_socket, '10.20.27.4', 10110, gprmc)
+                
+
+  
+        
 
         # publish available information
         if self.pub_imu:
