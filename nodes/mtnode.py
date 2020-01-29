@@ -119,7 +119,7 @@ class XSensDriver(object):
                                 get_param('/receive_xsens/laser_wrt_imu_roll', 0.0),
                                 get_param('/receive_xsens/laser_wrt_imu_pitch',   0.0))
         
-        print(self.alignment)
+        #print(self.alignment)
         
 
         ##TODO Handle these fields
