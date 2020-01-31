@@ -173,7 +173,7 @@ class XSensDriver(object):
                 rospy.logwarn(str(mte) + ", trying again")
                 time.sleep(1)
                                 
-    	rospy.loginfo("MT node interface at %s:%d."%(self.ip, self.port))
+    	rospy.loginfo("Connected to %s:%d"%(ip,port))
 
         #Check set the Alignment on the device.  These setting persist so write at each boot.
         self.device.GoToConfig()
