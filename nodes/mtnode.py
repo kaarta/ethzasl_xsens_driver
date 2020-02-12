@@ -114,6 +114,7 @@ class XSensDriver(object):
         self.frame_id = get_param('/receive_xsens/frame_id', '/imu')
         self.frame_local = get_param('/receive_xsens/frame_local', 'ENU')
 
+        self.configure = get_param('/receive_xsens/configure', False)
         self.alignment = quaternion_from_euler(
                                 get_param('/receive_xsens/laser_wrt_imu_yaw',  0.0),
                                 get_param('/receive_xsens/laser_wrt_imu_roll', 0.0),
@@ -173,16 +174,19 @@ class XSensDriver(object):
                 rospy.logwarn(str(mte) + ", trying again")
                 time.sleep(1)
                                 
-    	rospy.loginfo("Connected to %s:%d"%(ip,port))
+        rospy.loginfo("Connected to %s:%d"%(self.ip, self.port))
 
-        #Check set the Alignment on the device.  These setting persist so write at each boot.
-        self.device.GoToConfig()
-        self.device.SetAlignmentRotation(0, self.alignment)
-        #makes sure the local (1) alignment is set to the identity
-        self.device.SetAlignmentRotation(1, numpy.array([ 0.,  0.,  0.,  1.]))
-        #print(self.device.GetAlignmentRotation(0))
-        #print(self.device.GetAlignmentRotation(1))
-        self.device.GoToMeasurement()
+        if self.configure:
+          #Check set the Alignment on the device.  These setting persist so write at each boot.
+          self.device.GoToConfig()
+          self.device.SetAlignmentRotation(0, self.alignment)
+          #makes sure the local (1) alignment is set to the identity
+          self.device.SetAlignmentRotation(1, numpy.array([ 0.,  0.,  0.,  1.]))
+          #print(self.device.GetAlignmentRotation(0))
+          #print(self.device.GetAlignmentRotation(1))
+          self.device.GoToMeasurement()
+          rospy.loginfo("Configured Alignment to " + self.alignment)
+
 
         # optional no rotation procedure for internal calibration of biases
         # (only mark iv devices)
