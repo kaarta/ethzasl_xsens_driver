@@ -182,11 +182,11 @@ class XSensDriver(object):
           self.device.SetAlignmentRotation(0, self.alignment)
           #makes sure the local (1) alignment is set to the identity
           self.device.SetAlignmentRotation(1, numpy.array([ 0.,  0.,  0.,  1.]))
-          #print(self.device.GetAlignmentRotation(0))
-          #print(self.device.GetAlignmentRotation(1))
           self.device.GoToMeasurement()
-          rospy.loginfo("Configured Alignment to " + self.alignment)
-
+          rospy.loginfo("Configured Alignment to ")
+          rospy.loginfo(self.device.GetAlignmentRotation(0))
+          rospy.loginfo(self.device.GetAlignmentRotation(1))
+          
 
         # optional no rotation procedure for internal calibration of biases
         # (only mark iv devices)
