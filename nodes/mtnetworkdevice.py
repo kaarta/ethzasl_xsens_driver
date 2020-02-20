@@ -600,7 +600,12 @@ class MTNetworkDevice(object):
     def SetCurrentScenario(self, scenario_id):
         """Set the XKF scenario to use."""
         self._ensure_config_state()
-        data = struct.pack('!BB', 0, scenario_id)  # version, id
+        #The new Filter Profile takes a '/' slash separated string.  <profile>/<heading>
+        # Example: 'Responsive/VRU'\
+        if type(scenario_id) == str:
+          data = struct.pack('!%ds'%len(scenario_id), scenario_id)  #id
+        else:
+          data = struct.pack('!BB', 0, scenario_id)  #id
         self.write_ack(MID.SetCurrentScenario, data)
 
     # New names in mk5
@@ -1226,6 +1231,9 @@ Commands:
         Print current MT device configuration.
     -x, --xkf-scenario=ID
         Change the current XKF scenario.
+    -k, --filter=FILTER
+        Set filter profile.  This is synonmus with --xkf-scenario but takes a string.
+        The FILTER is the <profile>/<heading>. Example: 'Responsive/VRU'
     -l, --legacy-configure
         Configure the device in legacy mode (needs MODE and SETTINGS arguments
         below).
@@ -1519,13 +1527,13 @@ Deprecated options:
 ################################################################
 def main():
     # parse command line
-    shopts = 'hra:c:eild:b:m:s:p:f:x:vy:u:g:o:j:t:w:'
+    shopts = 'hra:c:eild:b:m:s:p:f:x:vy:u:g:o:j:t:w:k:'
     lopts = ['help', 'reset', 'change-baudrate=', 'configure=', 'echo',
              'inspect', 'legacy-configure', 'ip-address=', 'port=',
              'output-mode=', 'output-settings=', 'period=',
              'deprecated-skip-factor=', 'xkf-scenario=', 'verbose',
              'synchronization=', 'utc-time=', 'gnss-platform=',
-             'option-flags=', 'icc-command=', 'timeout=', 'initial-wait=']
+             'option-flags=', 'icc-command=', 'timeout=', 'initial-wait=', 'filter=']
     try:
         opts, args = getopt.gnu_getopt(sys.argv[1:], shopts, lopts)
     except getopt.GetoptError, e:
@@ -1543,6 +1551,7 @@ def main():
     skipfactor = None
     new_baudrate = None
     new_xkf = None
+    new_filter = None
     actions = []
     verbose = False
     sync_settings = []  # list of synchronization settings
@@ -1554,13 +1563,7 @@ def main():
             return
         elif o in ('-r', '--reset'):
             actions.append('reset')
-        elif o in ('-a', '--change-baudrate'):
-            try:
-                new_baudrate = int(a)
-            except ValueError:
-                print "change-baudrate argument must be integer."
-                return 1
-            actions.append('change-baudrate')
+
         elif o in ('-c', '--configure'):
             output_config = get_output_config(a)
             if output_config is None:
@@ -1579,6 +1582,9 @@ def main():
                 print "xkf-scenario argument must be integer."
                 return 1
             actions.append('xkf-scenario')
+        elif o in ('-k', '--filter'):
+            new_filter = a
+            actions.append('filter')
         elif o in ('-y', '--synchronization'):
             new_sync_settings = get_synchronization_settings(a)
             if new_sync_settings is None:
@@ -1648,6 +1654,7 @@ def main():
                 print "initial-wait argument must be a floating number."
                 return 1
 
+
     # if nothing else: echo
     if len(actions) == 0:
         actions.append('echo')
@@ -1664,8 +1671,8 @@ def main():
             print "(Disabled) Changing baudrate from %d to %d:" % (baudrate,
                                                         new_baudrate),
             sys.stdout.flush()
-            mt.ChangeBaudrate(new_baudrate)
-            print " Ok"  # should we test that it was actually ok?
+            #mt.ChangeBaudrate(new_baudrate)
+            #print " Ok"  # should we test that it was actually ok?
         if 'reset' in actions:
             print "Restoring factory defaults",
             sys.stdout.flush()
@@ -1737,9 +1744,15 @@ def main():
             mt.configure_legacy(mode, settings, period, skipfactor)
             print " Ok"        # should we test it was actually ok?
         if 'xkf-scenario' in actions:
-            print "Changing XKF scenario",
+            print "Changing XKF scenario to %d"%new_xkf,
             sys.stdout.flush()
             mt.SetCurrentScenario(new_xkf)
+            print "Ok"
+        if 'filter' in actions:
+            print "Changing Filter Profile to %s"%new_filter,
+            sys.stdout.flush()
+            #Note SetFilterProfile is an alias to SetCurrentScenario
+            mt.SetFilterProfile(new_filter)
             print "Ok"
         if 'echo' in actions:
             # if (mode is None) or (settings is None):
