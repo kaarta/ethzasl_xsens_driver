@@ -8,6 +8,7 @@ import datetime
 import glob
 import re
 import pprint
+import math
 
 from mtdef import MID, OutputMode, OutputSettings, MTException, Baudrates, \
     XDIGroup, getMIDName, DeviceState, DeprecatedMID, MTErrorMessage, \
@@ -588,9 +589,13 @@ class MTNetworkDevice(object):
             _, self.scenario_id = struct.unpack('!BB', data)  # version, id
             return self.scenario_id
         except struct.error:
-            if self.verbose:
+            try:
+              label, = struct.unpack('!%ds'%len(data), data)  # label
+              return (label.strip(),)
+            except (struct.error, ValueError):
+              if self.verbose:
                 print(data)
-            raise MTException('expected 2 bytes, received %d bytes'%len(data))
+              raise MTException('expected 2 bytes, received %d bytes'%len(data))
 
     def SetCurrentScenario(self, scenario_id):
         """Set the XKF scenario to use."""
@@ -659,7 +664,12 @@ class MTNetworkDevice(object):
         if command not in (0, 1, 2, 3):
             raise MTException("unknown ICC command 0x%02X" % command)
         cmd_data = struct.pack('!B', command)
-        res_data = self.write_ack(MID.IccCommand, cmd_data)
+
+        if command == 2:
+          self._ensure_config_state()
+        else:
+          self._ensure_measurement_state()
+        res_data = self.write_ack(MID.IccCommand, cmd_data, 1, 750)
         cmd_ack = struct.unpack('!B', res_data[:1])
         payload = res_data[1:]
         if cmd_ack != command:
@@ -955,6 +965,7 @@ class MTNetworkDevice(object):
             if (data_id & 0x00F0) == 0x20:  # Magnetic Field
                 o['magX'], o['magY'], o['magZ'] = \
                     struct.unpack("!3"+ffmt, content)
+                o['norm'] = math.sqrt(math.pow(o['magZ'], 2) + math.pow(o['magX'], 2) + math.pow(o['magY'], 2))
             else:
                 raise MTException("unknown packet: 0x%04X." % data_id)
             return o
